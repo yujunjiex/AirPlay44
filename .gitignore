@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.cxx/
+
+# Third-party deps cloned by setup-deps.sh
+third_party/RPiPlay/
+third_party/libplist/
+
+# OS / editor
+.DS_Store
+*.swp
