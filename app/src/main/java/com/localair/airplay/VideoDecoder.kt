@@ -12,12 +12,11 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
- * Async MediaCodec AVC decoder. Same threading pattern as AudioDecoder —
- * callback-driven, dedicated HandlerThread for codec operations. RPiPlay's
- * mirror thread only enqueues; MediaCodec pulls via its own callback when
- * input slots open up. This matches AudioDecoder which is confirmed working
- * on the same hardware, and avoids the 10ms-timeout starve we hit with
- * sync dequeueInputBuffer.
+ * Async MediaCodec AVC decoder that lives in the Service, independent of
+ * Activity lifecycle. Always set as the video sink so SPS+PPS are never
+ * missed. The Activity provides/revokes a Surface — codec is only created
+ * when both SPS+PPS AND a Surface are present, and torn down when the
+ * Surface goes away.
  */
 class VideoDecoder(
     private val onFramesChanged: (Boolean) -> Unit = {},
@@ -27,7 +26,7 @@ class VideoDecoder(
     @Volatile private var surface: Surface? = null
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
-    private var receivedAny = false
+    @Volatile var hasFrames = false; private set
     @Volatile private var rendered = 0L
     @Volatile private var fed = 0L
 
@@ -35,32 +34,55 @@ class VideoDecoder(
     private val codecThread = HandlerThread("VideoDecoder").apply { start() }
     private val codecHandler = Handler(codecThread.looper)
 
-    fun attach(s: Surface) { surface = s }
+    fun attachSurface(s: Surface) {
+        surface = s
+        Log.i(TAG, "surface attached")
+        codecHandler.post { maybeStartCodec() }
+    }
 
-    fun release() {
+    fun detachSurface() {
+        surface = null
+        Log.i(TAG, "surface detached — stopping codec")
         val c = codec
         codec = null
-        codecHandler.post {
-            c?.runCatching { stop(); release() }
-        }
+        codecHandler.post { c?.runCatching { stop(); release() } }
+        pending.clear()
+        rendered = 0; fed = 0
+        if (hasFrames) { hasFrames = false; onFramesChanged(false) }
+    }
+
+    fun release() {
+        detachSurface()
         codecThread.quitSafely()
-        surface = null
+        sps = null; pps = null
+    }
+
+    override fun onSessionEnd() {
+        Log.i(TAG, "session ended — resetting")
+        val c = codec
+        codec = null
+        codecHandler.post { c?.runCatching { stop(); release() } }
         sps = null; pps = null
         pending.clear()
-        if (receivedAny) { receivedAny = false; onFramesChanged(false) }
+        rendered = 0; fed = 0
+        if (hasFrames) { hasFrames = false; onFramesChanged(false) }
     }
 
     override fun onNalUnit(data: ByteArray, ptsUs: Long) {
-        if (!receivedAny) {
-            receivedAny = true
+        extractParams(data)
+        if (!hasFrames && sps != null && pps != null) {
+            hasFrames = true
             onFramesChanged(true)
-            Log.i(TAG, "first NAL buffer: ${data.size}B, types=${dumpNalTypes(data)}")
+            Log.i(TAG, "first NAL with config: ${data.size}B, types=${dumpNalTypes(data)}")
         }
-        if (codec == null) {
-            extractParams(data)
-            maybeStartCodec()
-        }
+        // Always buffer — codec may not be running yet (waiting for Surface).
+        // Cap at ~120 frames (~2s at 60fps) to avoid unbounded growth.
         pending.offer(data to ptsUs)
+        while (pending.size > 120) pending.poll()
+
+        if (codec == null && sps != null && pps != null && surface != null) {
+            codecHandler.post { maybeStartCodec() }
+        }
     }
 
     private fun extractParams(buf: ByteArray) {
@@ -69,14 +91,9 @@ class VideoDecoder(
             val begin = starts[i]
             val end = if (i + 1 < starts.size) starts[i + 1] else buf.size
             if (begin + 4 >= end) continue
-            val type = buf[begin + 4].toInt() and 0x1F
-            when (type) {
-                7 -> if (sps == null) sps = buf.copyOfRange(begin, end).also {
-                    Log.i(TAG, "SPS captured, ${it.size}B")
-                }
-                8 -> if (pps == null) pps = buf.copyOfRange(begin, end).also {
-                    Log.i(TAG, "PPS captured, ${it.size}B")
-                }
+            when (buf[begin + 4].toInt() and 0x1F) {
+                7 -> { sps = buf.copyOfRange(begin, end); Log.i(TAG, "SPS ${sps!!.size}B") }
+                8 -> { pps = buf.copyOfRange(begin, end); Log.i(TAG, "PPS ${pps!!.size}B") }
             }
         }
     }
@@ -103,25 +120,22 @@ class VideoDecoder(
         val p = pps ?: return
         if (codec != null) return
         val surf = surface ?: return
-        codecHandler.post {
-            if (codec != null) return@post
-            try {
-                val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 1920, 1080).apply {
-                    setByteBuffer("csd-0", ByteBuffer.wrap(s))
-                    setByteBuffer("csd-1", ByteBuffer.wrap(p))
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                    }
+        try {
+            val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 1920, 1080).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(s))
+                setByteBuffer("csd-1", ByteBuffer.wrap(p))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                 }
-                val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                c.setCallback(callback)   // uses codecHandler's looper (we're on it)
-                c.configure(fmt, surf, null, 0)
-                c.start()
-                codec = c
-                Log.i(TAG, "MediaCodec configured and started (async)")
-            } catch (e: Exception) {
-                Log.e(TAG, "codec init failed", e)
             }
+            val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            c.setCallback(callback)
+            c.configure(fmt, surf, null, 0)
+            c.start()
+            codec = c
+            Log.i(TAG, "codec started (async)")
+        } catch (e: Exception) {
+            Log.e(TAG, "codec init failed", e)
         }
     }
 
@@ -129,7 +143,6 @@ class VideoDecoder(
         override fun onInputBufferAvailable(c: MediaCodec, idx: Int) {
             val entry = pending.poll()
             if (entry == null) {
-                // Defer: reschedule ourselves 5ms later with the same slot.
                 codecHandler.postDelayed({
                     val late = pending.poll()
                     if (late != null) {
@@ -139,7 +152,6 @@ class VideoDecoder(
                         c.queueInputBuffer(idx, 0, nal.size, pts, 0)
                         fed++
                     } else {
-                        // No data still; tell codec with an empty buffer so it doesn't block.
                         c.queueInputBuffer(idx, 0, 0, 0, 0)
                     }
                 }, 5)
@@ -166,7 +178,7 @@ class VideoDecoder(
         }
 
         override fun onError(c: MediaCodec, e: MediaCodec.CodecException) {
-            Log.e(TAG, "codec error: ${e.diagnosticInfo} recoverable=${e.isRecoverable} transient=${e.isTransient}", e)
+            Log.e(TAG, "codec error: ${e.diagnosticInfo}", e)
         }
     }
 

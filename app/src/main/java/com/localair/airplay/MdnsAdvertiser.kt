@@ -19,9 +19,7 @@ class MdnsAdvertiser(context: Context) {
     private var airplayListener: NsdManager.RegistrationListener? = null
     private var raopListener: NsdManager.RegistrationListener? = null
 
-    fun register(port: Int) {
-        val deviceId = "AA:BB:CC:DD:EE:FF"
-        val name = "localair"
+    fun register(port: Int, deviceId: String = "AA:BB:CC:DD:EE:FF", name: String = "localair") {
 
         val airplay = NsdServiceInfo().apply {
             serviceName = name

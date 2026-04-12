@@ -2,6 +2,7 @@ package com.localair.airplay.nativebridge
 
 interface VideoSink {
     fun onNalUnit(data: ByteArray, ptsUs: Long)
+    fun onSessionEnd()
 }
 
 interface AudioSink {
@@ -13,11 +14,19 @@ object AirPlayNative {
 
     fun start(): Int = nativeStart()
     fun stop() = nativeStop()
+    fun isRunning(): Boolean = nativeIsRunning()
     fun setVideoSink(sink: VideoSink?) = nativeSetSink(sink)
     fun setAudioSink(sink: AudioSink?) = nativeSetAudioSink(sink)
 
+    var connectionListener: (() -> Unit)? = null
+
+    @JvmStatic fun onConnectionInit() {
+        connectionListener?.invoke()
+    }
+
     @JvmStatic private external fun nativeStart(): Int
     @JvmStatic private external fun nativeStop()
+    @JvmStatic private external fun nativeIsRunning(): Boolean
     @JvmStatic private external fun nativeSetSink(sink: VideoSink?)
     @JvmStatic private external fun nativeSetAudioSink(sink: AudioSink?)
 }

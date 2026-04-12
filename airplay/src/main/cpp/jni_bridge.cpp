@@ -19,6 +19,9 @@ extern "C" {
 
 namespace {
 
+jclass    g_nativeClass = nullptr;
+jmethodID g_onConnInit  = nullptr;
+
 #if HAVE_RPIPLAY
 raop_t*  g_raop  = nullptr;
 dnssd_t* g_dnssd = nullptr;
@@ -29,8 +32,22 @@ void audio_process(void*, raop_ntp_t*, aac_decode_struct* data) {
 void video_process(void*, raop_ntp_t*, h264_decode_struct* data) {
     localair::dispatchNal(data->data, data->data_len, static_cast<int64_t>(data->pts));
 }
-void conn_init(void*)    {}
-void conn_destroy(void*) {}
+void conn_init(void*) {
+    LOGI("client connected");
+    if (!g_nativeClass || !g_onConnInit) return;
+    JavaVM* vm = localair::jvm();
+    if (!vm) return;
+    JNIEnv* e = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&e), JNI_VERSION_1_6) != JNI_OK)
+        vm->AttachCurrentThread(&e, nullptr);
+    if (!e) return;
+    e->CallStaticVoidMethod(g_nativeClass, g_onConnInit);
+    if (e->ExceptionCheck()) { e->ExceptionDescribe(); e->ExceptionClear(); }
+}
+void conn_destroy(void*) {
+    LOGI("client disconnected");
+    localair::dispatchSessionEnd();
+}
 void audio_flush(void*)  {}
 void video_flush(void*)  {}
 void audio_set_volume(void*, float)                       {}
@@ -85,6 +102,15 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(JNIEnv*, jclass
 #endif
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_localair_airplay_nativebridge_AirPlayNative_nativeIsRunning(JNIEnv*, jclass) {
+#if HAVE_RPIPLAY
+    return g_raop && raop_is_running(g_raop) ? JNI_TRUE : JNI_FALSE;
+#else
+    return JNI_FALSE;
+#endif
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStop(JNIEnv*, jclass) {
 #if HAVE_RPIPLAY
@@ -105,5 +131,13 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeSetAudioSink(JNIEnv* 
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
     localair::initJvm(vm);
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return -1;
+    jclass cls = env->FindClass("com/localair/airplay/nativebridge/AirPlayNative");
+    if (cls) {
+        g_nativeClass = reinterpret_cast<jclass>(env->NewGlobalRef(cls));
+        g_onConnInit = env->GetStaticMethodID(cls, "onConnectionInit", "()V");
+        env->DeleteLocalRef(cls);
+    }
     return JNI_VERSION_1_6;
 }
