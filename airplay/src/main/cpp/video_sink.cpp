@@ -21,6 +21,7 @@ JNIEnv* attach() {
 namespace localair {
 
 void initJvm(JavaVM* vm) { g_vm = vm; }
+JavaVM* jvm() { return g_vm; }
 
 void setSink(JNIEnv* env, jobject sink) {
     std::lock_guard<std::mutex> lk(g_mu);

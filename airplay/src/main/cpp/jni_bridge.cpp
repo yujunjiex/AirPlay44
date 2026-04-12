@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "video_sink.h"
+#include "audio_sink.h"
 
 #if HAVE_RPIPLAY
 extern "C" {
@@ -22,7 +23,9 @@ namespace {
 raop_t*  g_raop  = nullptr;
 dnssd_t* g_dnssd = nullptr;
 
-void audio_process(void*, raop_ntp_t*, aac_decode_struct*) {}
+void audio_process(void*, raop_ntp_t*, aac_decode_struct* data) {
+    localair::dispatchAac(data->data, data->data_len, static_cast<int64_t>(data->pts));
+}
 void video_process(void*, raop_ntp_t*, h264_decode_struct* data) {
     localair::dispatchNal(data->data, data->data_len, static_cast<int64_t>(data->pts));
 }
@@ -93,6 +96,11 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStop(JNIEnv*, jclass)
 extern "C" JNIEXPORT void JNICALL
 Java_com_localair_airplay_nativebridge_AirPlayNative_nativeSetSink(JNIEnv* env, jclass, jobject sink) {
     localair::setSink(env, sink);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_localair_airplay_nativebridge_AirPlayNative_nativeSetAudioSink(JNIEnv* env, jclass, jobject sink) {
+    localair::setAudioSink(env, sink);
 }
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {

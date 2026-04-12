@@ -28,7 +28,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val root = FrameLayout(this)
         surfaceView = SurfaceView(this).apply {
             holder.addCallback(this@MainActivity)
-            setZOrderMediaOverlay(true)
+            setZOrderOnTop(true)
         }
         root.addView(surfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,

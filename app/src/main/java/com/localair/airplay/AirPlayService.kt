@@ -16,6 +16,7 @@ class AirPlayService : Service() {
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private lateinit var mdns: MdnsAdvertiser
+    private val audio = AudioDecoder()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -24,6 +25,7 @@ class AirPlayService : Service() {
         startInForeground()
         acquireMulticastLock()
         val port = AirPlayNative.start()
+        AirPlayNative.setAudioSink(audio)
         mdns = MdnsAdvertiser(this)
         if (port > 0) {
             mdns.register(port)
@@ -35,7 +37,9 @@ class AirPlayService : Service() {
 
     override fun onDestroy() {
         if (::mdns.isInitialized) mdns.unregister()
+        AirPlayNative.setAudioSink(null)
         AirPlayNative.stop()
+        audio.release()
         multicastLock?.release()
         super.onDestroy()
     }

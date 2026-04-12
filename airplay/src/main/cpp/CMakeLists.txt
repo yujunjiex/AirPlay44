@@ -98,6 +98,7 @@ endif()
 add_library(airplay_native SHARED
     jni_bridge.cpp
     video_sink.cpp
+    audio_sink.cpp
 )
 target_include_directories(airplay_native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
