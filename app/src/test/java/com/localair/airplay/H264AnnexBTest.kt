@@ -28,6 +28,8 @@ class H264AnnexBTest {
         assertTrue(H264AnnexB.containsVideoSlice(nal(5, 1)))
         assertTrue(H264AnnexB.containsVideoSlice(nal(1, 1)))
         assertFalse(H264AnnexB.containsVideoSlice(nal(7, 1) + nal(8, 2)))
+        assertTrue(H264AnnexB.containsIdr(nal(5, 1)))
+        assertFalse(H264AnnexB.containsIdr(nal(1, 1)))
     }
 
     @Test fun toleratesTruncatedAndNonAnnexBData() {

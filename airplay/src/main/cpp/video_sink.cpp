@@ -17,6 +17,10 @@ std::mutex g_mu;
 // Cache the last SPS+PPS packet so late-attaching sinks can configure.
 std::vector<uint8_t> g_cachedConfig;
 int64_t g_cachedConfigPts = 0;
+int g_cachedSourceWidth = 0;
+int g_cachedSourceHeight = 0;
+int g_cachedVideoWidth = 0;
+int g_cachedVideoHeight = 0;
 
 JNIEnv* attach() {
     JNIEnv* env = nullptr;
@@ -32,11 +36,28 @@ bool isSpsOrPps(const uint8_t* data, int len) {
     return type == 7 || type == 8;
 }
 
-void sendToSink(JNIEnv* env, const uint8_t* data, int len, int64_t pts) {
+void sendToSink(
+        JNIEnv* env,
+        const uint8_t* data,
+        int len,
+        int64_t pts,
+        int sourceWidth,
+        int sourceHeight,
+        int videoWidth,
+        int videoHeight) {
     if (!g_sinkRef || !g_onNal) return;
     jbyteArray arr = env->NewByteArray(len);
     env->SetByteArrayRegion(arr, 0, len, reinterpret_cast<const jbyte*>(data));
-    env->CallVoidMethod(g_sinkRef, g_onNal, arr, static_cast<jlong>(pts));
+    env->CallVoidMethod(
+        g_sinkRef,
+        g_onNal,
+        arr,
+        static_cast<jlong>(pts),
+        static_cast<jint>(sourceWidth),
+        static_cast<jint>(sourceHeight),
+        static_cast<jint>(videoWidth),
+        static_cast<jint>(videoHeight)
+    );
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     env->DeleteLocalRef(arr);
 }
@@ -53,7 +74,7 @@ void setSink(JNIEnv* env, jobject sink) {
     if (!sink) return;
     g_sinkRef = env->NewGlobalRef(sink);
     jclass cls = env->GetObjectClass(g_sinkRef);
-    g_onNal = env->GetMethodID(cls, "onNalUnit", "([BJ)V");
+    g_onNal = env->GetMethodID(cls, "onNalUnit", "([BJIIII)V");
     g_onEnd = env->GetMethodID(cls, "onSessionEnd", "()V");
     if (!g_onNal) LOGE("onNalUnit not found on sink");
     env->DeleteLocalRef(cls);
@@ -61,13 +82,26 @@ void setSink(JNIEnv* env, jobject sink) {
     // Replay cached SPS+PPS to the new sink so it can configure immediately.
     if (!g_cachedConfig.empty() && g_onNal) {
         LOGI("replaying cached config (%zu bytes) to new sink", g_cachedConfig.size());
-        sendToSink(env, g_cachedConfig.data(), g_cachedConfig.size(), g_cachedConfigPts);
+        sendToSink(
+            env,
+            g_cachedConfig.data(),
+            g_cachedConfig.size(),
+            g_cachedConfigPts,
+            g_cachedSourceWidth,
+            g_cachedSourceHeight,
+            g_cachedVideoWidth,
+            g_cachedVideoHeight
+        );
     }
 }
 
 void dispatchSessionEnd() {
     std::lock_guard<std::mutex> lk(g_mu);
     g_cachedConfig.clear();
+    g_cachedSourceWidth = 0;
+    g_cachedSourceHeight = 0;
+    g_cachedVideoWidth = 0;
+    g_cachedVideoHeight = 0;
     if (!g_sinkRef || !g_onEnd) return;
     JNIEnv* env = attach();
     if (!env) return;
@@ -75,19 +109,39 @@ void dispatchSessionEnd() {
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
 }
 
-void dispatchNal(const uint8_t* data, int len, int64_t ptsUs) {
+void dispatchNal(
+        const uint8_t* data,
+        int len,
+        int64_t ptsUs,
+        int sourceWidth,
+        int sourceHeight,
+        int videoWidth,
+        int videoHeight) {
     std::lock_guard<std::mutex> lk(g_mu);
 
     // Cache any buffer containing SPS/PPS for late-attaching sinks.
     if (isSpsOrPps(data, len)) {
         g_cachedConfig.assign(data, data + len);
         g_cachedConfigPts = ptsUs;
+        g_cachedSourceWidth = sourceWidth;
+        g_cachedSourceHeight = sourceHeight;
+        g_cachedVideoWidth = videoWidth;
+        g_cachedVideoHeight = videoHeight;
     }
 
     if (!g_sinkRef || !g_onNal) return;
     JNIEnv* env = attach();
     if (!env) return;
-    sendToSink(env, data, len, ptsUs);
+    sendToSink(
+        env,
+        data,
+        len,
+        ptsUs,
+        sourceWidth,
+        sourceHeight,
+        videoWidth,
+        videoHeight
+    );
 }
 
 } // namespace localair

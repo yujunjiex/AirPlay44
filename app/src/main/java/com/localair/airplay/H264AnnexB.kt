@@ -38,4 +38,8 @@ internal object H264AnnexB {
         val type = data[start + 4].toInt() and 0x1f
         type == 1 || type == 5
     }
+
+    fun containsIdr(data: ByteArray): Boolean = startCodes(data).any { start ->
+        data[start + 4].toInt() and 0x1f == 5
+    }
 }

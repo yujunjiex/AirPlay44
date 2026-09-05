@@ -8,7 +8,15 @@ void initJvm(JavaVM* vm);
 JavaVM* jvm();
 
 void setSink(JNIEnv* env, jobject sink);
-void dispatchNal(const uint8_t* data, int len, int64_t ptsUs);
+void dispatchNal(
+    const uint8_t* data,
+    int len,
+    int64_t ptsUs,
+    int sourceWidth,
+    int sourceHeight,
+    int videoWidth,
+    int videoHeight
+);
 void dispatchSessionEnd();
 
 } // namespace localair

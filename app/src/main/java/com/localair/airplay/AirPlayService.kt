@@ -18,9 +18,18 @@ class AirPlayService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var mdns: MdnsAdvertiser? = null
     private val audio = AudioDecoder()
-    val video = VideoDecoder { hasFrames ->
-        sendBroadcast(Intent(ACTION_FRAMES_CHANGED).putExtra("hasFrames", hasFrames))
-    }
+    internal val video = VideoDecoder(
+        onFramesChanged = { hasFrames ->
+            sendBroadcast(Intent(ACTION_FRAMES_CHANGED).putExtra(EXTRA_HAS_FRAMES, hasFrames))
+        },
+        onVideoSizeChanged = { size ->
+            sendBroadcast(
+                Intent(ACTION_VIDEO_SIZE_CHANGED)
+                    .putExtra(EXTRA_VIDEO_WIDTH, size.width)
+                    .putExtra(EXTRA_VIDEO_HEIGHT, size.height)
+            )
+        },
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -100,6 +109,10 @@ class AirPlayService : Service() {
 
     companion object {
         const val ACTION_FRAMES_CHANGED = "io.github.yujunjiex.airplay44.FRAMES_CHANGED"
+        const val ACTION_VIDEO_SIZE_CHANGED = "io.github.yujunjiex.airplay44.VIDEO_SIZE_CHANGED"
+        const val EXTRA_HAS_FRAMES = "hasFrames"
+        const val EXTRA_VIDEO_WIDTH = "videoWidth"
+        const val EXTRA_VIDEO_HEIGHT = "videoHeight"
         private const val TAG = "AirPlay44-Service"
         private const val CHANNEL = "airplay44"
         @Volatile var instance: AirPlayService? = null

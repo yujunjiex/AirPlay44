@@ -1,7 +1,14 @@
 package com.localair.airplay.nativebridge
 
 interface VideoSink {
-    fun onNalUnit(data: ByteArray, ptsUs: Long)
+    fun onNalUnit(
+        data: ByteArray,
+        ptsUs: Long,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        videoWidth: Int,
+        videoHeight: Int,
+    )
     fun onSessionEnd()
 }
 

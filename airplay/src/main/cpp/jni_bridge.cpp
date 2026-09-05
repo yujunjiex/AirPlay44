@@ -29,8 +29,20 @@ dnssd_t* g_dnssd = nullptr;
 void audio_process(void*, raop_ntp_t*, aac_decode_struct* data) {
     localair::dispatchAac(data->data, data->data_len, static_cast<int64_t>(data->pts));
 }
+int normalized_dimension(float value) {
+    if (value < 1.0f || value > 8192.0f) return 0;
+    return static_cast<int>(value + 0.5f);
+}
 void video_process(void*, raop_ntp_t*, h264_decode_struct* data) {
-    localair::dispatchNal(data->data, data->data_len, static_cast<int64_t>(data->pts));
+    localair::dispatchNal(
+        data->data,
+        data->data_len,
+        static_cast<int64_t>(data->pts),
+        normalized_dimension(data->source_width),
+        normalized_dimension(data->source_height),
+        normalized_dimension(data->video_width),
+        normalized_dimension(data->video_height)
+    );
 }
 void conn_init(void*) {
     LOGI("client connected");

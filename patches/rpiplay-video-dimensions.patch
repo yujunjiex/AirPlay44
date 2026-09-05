@@ -1,0 +1,75 @@
+diff --git a/lib/raop_rtp_mirror.c b/lib/raop_rtp_mirror.c
+index 2040d7e..dec114d 100755
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -70,6 +70,10 @@ struct raop_rtp_mirror_s {
+     int mirror_data_sock;
+ 
+     unsigned short mirror_data_lport;
++    float source_width;
++    float source_height;
++    float video_width;
++    float video_height;
+ };
+ 
+ static int
+@@ -335,11 +339,15 @@ raop_rtp_mirror_thread(void *arg)
+                 fwrite(payload_decrypted, payload_size, 1, file);
+ #endif
+ 
+-                h264_decode_struct h264_data;
++                h264_decode_struct h264_data = {0};
+                 h264_data.data_len = payload_size;
+                 h264_data.data = payload_decrypted;
+                 h264_data.frame_type = 1;
+                 h264_data.pts = ntp_timestamp;
++                h264_data.source_width = raop_rtp_mirror->source_width;
++                h264_data.source_height = raop_rtp_mirror->source_height;
++                h264_data.video_width = raop_rtp_mirror->video_width;
++                h264_data.video_height = raop_rtp_mirror->video_height;
+ 
+                 raop_rtp_mirror->callbacks.video_process(raop_rtp_mirror->callbacks.cls, raop_rtp_mirror->ntp, &h264_data);
+                 free(payload_decrypted);
+@@ -351,6 +359,10 @@ raop_rtp_mirror_thread(void *arg)
+                 float height_source = byteutils_get_float(packet, 44);
+                 float width = byteutils_get_float(packet, 56);
+                 float height = byteutils_get_float(packet, 60);
++                raop_rtp_mirror->source_width = width_source;
++                raop_rtp_mirror->source_height = height_source;
++                raop_rtp_mirror->video_width = width;
++                raop_rtp_mirror->video_height = height;
+                 logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG, "raop_rtp_mirror width_source = %f height_source = %f width = %f height = %f",
+                            width_source, height_source, width, height);
+ 
+@@ -391,11 +403,15 @@ raop_rtp_mirror_thread(void *arg)
+                     fwrite(sps_pps, sps_pps_len, 1, file);
+ #endif
+ 
+-                    h264_decode_struct h264_data;
++                    h264_decode_struct h264_data = {0};
+                     h264_data.data_len = sps_pps_len;
+                     h264_data.data = sps_pps;
+                     h264_data.frame_type = 0;
+                     h264_data.pts = 0;
++                    h264_data.source_width = width_source;
++                    h264_data.source_height = height_source;
++                    h264_data.video_width = width;
++                    h264_data.video_height = height;
+                     raop_rtp_mirror->callbacks.video_process(raop_rtp_mirror->callbacks.cls, raop_rtp_mirror->ntp, &h264_data);
+                 }
+                 free(h264.picture_parameter_set);
+diff --git a/lib/stream.h b/lib/stream.h
+index a801f4c..d74e6e3 100755
+--- a/lib/stream.h
++++ b/lib/stream.h
+@@ -25,6 +25,10 @@ typedef struct {
+     int data_len;
+     unsigned int n_time_stamp;
+     uint64_t pts;
++    float source_width;
++    float source_height;
++    float video_width;
++    float video_height;
+ } h264_decode_struct;
+ 
+ typedef struct {

@@ -17,14 +17,27 @@ import android.widget.FrameLayout
 import android.widget.TextView
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
+    private lateinit var root: FrameLayout
     private lateinit var surfaceView: SurfaceView
     private lateinit var waiting: TextView
     private val handler = Handler()
     private var surfaceReady = false
 
-    private val framesReceiver = object : BroadcastReceiver() {
+    private val stateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            waiting.visibility = if (intent.getBooleanExtra("hasFrames", false)) View.GONE else View.VISIBLE
+            when (intent.action) {
+                AirPlayService.ACTION_FRAMES_CHANGED -> {
+                    waiting.visibility = if (
+                        intent.getBooleanExtra(AirPlayService.EXTRA_HAS_FRAMES, false)
+                    ) View.GONE else View.VISIBLE
+                }
+                AirPlayService.ACTION_VIDEO_SIZE_CHANGED -> updateSurfaceLayout(
+                    PixelSize(
+                        intent.getIntExtra(AirPlayService.EXTRA_VIDEO_WIDTH, 0),
+                        intent.getIntExtra(AirPlayService.EXTRA_VIDEO_HEIGHT, 0),
+                    )
+                )
+            }
         }
     }
 
@@ -35,7 +48,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         surfaceView = SurfaceView(this).apply { holder.addCallback(this@MainActivity) }
         root.addView(surfaceView, FrameLayout.LayoutParams(-1, -1))
         waiting = TextView(this).apply {
@@ -49,7 +62,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         setContentView(root)
 
         startService(Intent(this, AirPlayService::class.java))
-        registerReceiver(framesReceiver, IntentFilter(AirPlayService.ACTION_FRAMES_CHANGED))
+        registerReceiver(
+            stateReceiver,
+            IntentFilter().apply {
+                addAction(AirPlayService.ACTION_FRAMES_CHANGED)
+                addAction(AirPlayService.ACTION_VIDEO_SIZE_CHANGED)
+            },
+        )
     }
 
     override fun onResume() {
@@ -62,6 +81,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val service = AirPlayService.instance
         if (service != null) {
             service.attachSurface(surfaceView.holder.surface)
+            service.video.displaySize?.let(::updateSurfaceLayout)
         } else if (attempt < 20) {
             handler.postDelayed({ attachWhenReady(attempt + 1) }, 250)
         }
@@ -72,7 +92,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         attachWhenReady(0)
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        AirPlayService.instance?.video?.displaySize?.let(::updateSurfaceLayout)
+    }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
@@ -82,7 +104,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        unregisterReceiver(framesReceiver)
+        unregisterReceiver(stateReceiver)
         super.onDestroy()
+    }
+
+    private fun updateSurfaceLayout(content: PixelSize) {
+        if (!content.isValid) return
+        root.post {
+            val fitted = VideoGeometry.fitInside(PixelSize(root.width, root.height), content)
+            if (!fitted.isValid) return@post
+            val params = surfaceView.layoutParams as FrameLayout.LayoutParams
+            if (params.width == fitted.width && params.height == fitted.height) return@post
+            params.width = fitted.width
+            params.height = fitted.height
+            params.gravity = Gravity.CENTER
+            surfaceView.layoutParams = params
+            android.util.Log.i("AirPlay44-Activity", "surface ${fitted.width}x${fitted.height} for $content")
+        }
     }
 }
