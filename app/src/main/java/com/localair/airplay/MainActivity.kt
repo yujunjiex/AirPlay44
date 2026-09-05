@@ -48,7 +48,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
 
-        root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        root = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            clipChildren = true
+        }
         surfaceView = SurfaceView(this).apply { holder.addCallback(this@MainActivity) }
         root.addView(surfaceView, FrameLayout.LayoutParams(-1, -1))
         waiting = TextView(this).apply {
@@ -111,7 +114,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun updateSurfaceLayout(content: PixelSize) {
         if (!content.isValid) return
         root.post {
-            val fitted = VideoGeometry.fitInside(PixelSize(root.width, root.height), content)
+            val fitted = VideoGeometry.fitForTv(PixelSize(root.width, root.height), content)
             if (!fitted.isValid) return@post
             val params = surfaceView.layoutParams as FrameLayout.LayoutParams
             if (params.width == fitted.width && params.height == fitted.height) return@post

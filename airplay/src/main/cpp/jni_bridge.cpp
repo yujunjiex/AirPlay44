@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -25,6 +26,7 @@ jmethodID g_onConnInit  = nullptr;
 #if HAVE_RPIPLAY
 raop_t*  g_raop  = nullptr;
 dnssd_t* g_dnssd = nullptr;
+std::atomic<int> g_connectionCount{0};
 
 void audio_process(void*, raop_ntp_t*, aac_decode_struct* data) {
     localair::dispatchAac(data->data, data->data_len, static_cast<int64_t>(data->pts));
@@ -45,7 +47,9 @@ void video_process(void*, raop_ntp_t*, h264_decode_struct* data) {
     );
 }
 void conn_init(void*) {
-    LOGI("client connected");
+    const int active = g_connectionCount.fetch_add(1) + 1;
+    LOGI("AirPlay control connection opened; active=%d", active);
+    if (active != 1) return;
     if (!g_nativeClass || !g_onConnInit) return;
     JavaVM* vm = localair::jvm();
     if (!vm) return;
@@ -57,8 +61,13 @@ void conn_init(void*) {
     if (e->ExceptionCheck()) { e->ExceptionDescribe(); e->ExceptionClear(); }
 }
 void conn_destroy(void*) {
-    LOGI("client disconnected");
-    localair::dispatchSessionEnd();
+    const int previous = g_connectionCount.fetch_sub(1);
+    const int active = previous > 0 ? previous - 1 : 0;
+    if (previous <= 0) g_connectionCount.store(0);
+    LOGI("AirPlay control connection closed; active=%d", active);
+    // An iPhone uses separate mirror, audio, and auxiliary control
+    // connections. Only end the video session after the last one closes.
+    if (active == 0) localair::dispatchSessionEnd();
 }
 void audio_flush(void*)  {}
 void video_flush(void*)  {}
@@ -76,6 +85,7 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(
         JNIEnv* env, jclass, jstring jname, jbyteArray jmac) {
 #if HAVE_RPIPLAY
+    g_connectionCount.store(0);
     if (!jname || !jmac || env->GetArrayLength(jmac) != 6) {
         LOGE("invalid device name or MAC");
         return 0;
@@ -147,6 +157,7 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStop(JNIEnv*, jclass)
 #if HAVE_RPIPLAY
     if (g_raop)  { raop_stop(g_raop); raop_destroy(g_raop); g_raop = nullptr; }
     if (g_dnssd) { dnssd_destroy(g_dnssd); g_dnssd = nullptr; }
+    g_connectionCount.store(0);
 #endif
 }
 

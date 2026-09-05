@@ -36,4 +36,19 @@ internal object VideoGeometry {
             PixelSize(heightLimitedWidth.toInt().coerceAtLeast(1), container.height)
         }
     }
+
+    fun fillInside(container: PixelSize, content: PixelSize): PixelSize {
+        if (!container.isValid || !content.isValid) return container
+        val heightLimitedWidth = container.height.toLong() * content.width / content.height
+        return if (heightLimitedWidth >= container.width) {
+            PixelSize(heightLimitedWidth.toInt().coerceAtLeast(1), container.height)
+        } else {
+            val widthLimitedHeight = container.width.toLong() * content.height / content.width
+            PixelSize(container.width, widthLimitedHeight.toInt().coerceAtLeast(1))
+        }
+    }
+
+    /** Landscape mirrors fill the TV without distortion; portrait mirrors remain fully visible. */
+    fun fitForTv(container: PixelSize, content: PixelSize): PixelSize =
+        if (content.width >= content.height) fillInside(container, content) else fitInside(container, content)
 }

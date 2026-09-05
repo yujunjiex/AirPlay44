@@ -63,20 +63,33 @@ internal class VideoDecoder(
             pending.clear()
             resetRequested = true
             presentationClock.reset()
+            waitingForIdr = waitingForIdr || codec != null
         }
 
         val hasIdr = H264AnnexB.containsIdr(data)
         if (waitingForIdr && !hasIdr) return
-        if (hasIdr) waitingForIdr = false
-
-        pending.offer(Frame(data, ptsUs))
-        if (pending.size > MAX_PENDING_FRAMES) {
+        if (waitingForIdr) {
             pending.clear()
             resetRequested = true
             presentationClock.reset()
-            waitingForIdr = !hasIdr
-            if (hasIdr) pending.offer(Frame(data, ptsUs))
-            Log.w(TAG, "decoder queue overflow; resynchronizing at the next IDR frame")
+            waitingForIdr = false
+            Log.i(TAG, "resynchronizing decoder at IDR frame")
+        }
+
+        pending.offer(Frame(data, ptsUs))
+        if (pending.size > MAX_PENDING_FRAMES) {
+            if (hasIdr) {
+                pending.clear()
+                pending.offer(Frame(data, ptsUs))
+                resetRequested = true
+                presentationClock.reset()
+                Log.w(TAG, "decoder queue is behind; restarting from current IDR")
+            } else {
+                // Keep draining already accepted frames so the last image remains
+                // visible. Drop new deltas until an IDR lets us restart cleanly.
+                waitingForIdr = true
+                Log.w(TAG, "decoder queue is behind; dropping new frames until the next IDR")
+            }
         }
     }
 
@@ -112,11 +125,13 @@ internal class VideoDecoder(
         if (sourceWidth <= 0 && sourceHeight <= 0 && videoWidth <= 0 && videoHeight <= 0) return
         val updated = VideoGeometry.fromAirPlay(sourceWidth, sourceHeight, videoWidth, videoHeight)
         if (updated == geometry) return
+        val hadActiveDecoder = codec != null
         geometry = updated
         displaySize = updated.display
         pending.clear()
         resetRequested = true
         presentationClock.reset()
+        if (hadActiveDecoder) waitingForIdr = true
         onVideoSizeChanged(updated.display)
         Log.i(TAG, "AirPlay geometry: display=${updated.display}, encoded=${updated.encoded}")
     }
@@ -163,6 +178,7 @@ internal class VideoDecoder(
             } catch (error: Throwable) {
                 Log.e(TAG, "decoder failed; waiting for next config", error)
                 releaseCodec()
+                pending.clear()
                 presentationClock.reset()
                 waitingForIdr = true
                 try {
@@ -267,6 +283,6 @@ internal class VideoDecoder(
     companion object {
         private const val TAG = "AirPlay44-Video"
         private const val AVC_MIME = "video/avc"
-        private const val MAX_PENDING_FRAMES = 45
+        private const val MAX_PENDING_FRAMES = 90
     }
 }

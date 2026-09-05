@@ -17,10 +17,24 @@ class VideoGeometryTest {
         )
     }
 
+    @Test fun fillsLandscapeTvByCroppingSidesWithoutStretching() {
+        assertEquals(
+            PixelSize(2337, 1080),
+            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(2532, 1170)),
+        )
+    }
+
     @Test fun fitsPortraitPhoneInsideTvWithoutStretching() {
         assertEquals(
             PixelSize(498, 1080),
-            VideoGeometry.fitInside(PixelSize(1920, 1080), PixelSize(1179, 2556)),
+            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(1179, 2556)),
+        )
+    }
+
+    @Test fun sixteenByNineLandscapeNeedsNoCrop() {
+        assertEquals(
+            PixelSize(1920, 1080),
+            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(1920, 1080)),
         )
     }
 
