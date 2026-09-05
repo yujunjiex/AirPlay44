@@ -17,10 +17,17 @@ class VideoGeometryTest {
         )
     }
 
-    @Test fun fillsLandscapeTvByCroppingSidesWithoutStretching() {
+    @Test fun fillsTvFromIphone16LandscapeByCroppingSidesWithoutStretching() {
         assertEquals(
-            PixelSize(2337, 1080),
-            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(2532, 1170)),
+            PixelSize(2341, 1080),
+            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(2556, 1179)),
+        )
+    }
+
+    @Test fun fillsTvFromIphone16ProLandscapeByCroppingSidesWithoutStretching() {
+        assertEquals(
+            PixelSize(2348, 1080),
+            VideoGeometry.fitForTv(PixelSize(1920, 1080), PixelSize(2622, 1206)),
         )
     }
 
