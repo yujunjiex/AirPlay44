@@ -6,11 +6,12 @@ plugins {
 android {
     namespace = "com.localair.airplay.nativebridge"
     compileSdk = 35
+    ndkVersion = "25.2.9519653"
 
     defaultConfig {
-        minSdk = 28
+        minSdk = 19
         ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+            abiFilters += listOf("armeabi-v7a")
         }
         externalNativeBuild {
             cmake {
@@ -34,9 +35,4 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-}
-
-dependencies {
-    implementation(libs.kotlinx.coroutines.android)
-    implementation("com.android.ndk.thirdparty:openssl:1.1.1q-beta-1")
 }

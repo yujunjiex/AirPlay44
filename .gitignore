@@ -9,6 +9,9 @@ captures/
 # Third-party deps cloned by setup-deps.sh
 third_party/RPiPlay/
 third_party/libplist/
+third_party/openssl-1.1.1w/
+third_party/openssl-1.1.1w.tar.gz
+.release/
 
 # OS / editor
 .DS_Store

@@ -61,8 +61,18 @@ void log_callback(void*, int level, const char* msg) {
 } // namespace
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(JNIEnv*, jclass) {
+Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(
+        JNIEnv* env, jclass, jstring jname, jbyteArray jmac) {
 #if HAVE_RPIPLAY
+    if (!jname || !jmac || env->GetArrayLength(jmac) != 6) {
+        LOGE("invalid device name or MAC");
+        return 0;
+    }
+    const char* name = env->GetStringUTFChars(jname, nullptr);
+    if (!name) return 0;
+    jbyte hw_addr[6];
+    env->GetByteArrayRegion(jmac, 0, 6, hw_addr);
+
     raop_callbacks_t cbs{};
     cbs.audio_process      = audio_process;
     cbs.video_process      = video_process;
@@ -75,16 +85,25 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(JNIEnv*, jclass
     cbs.audio_set_coverart = audio_set_coverart;
 
     g_raop = raop_init(10, &cbs);
-    if (!g_raop) { LOGE("raop_init failed"); return 0; }
+    if (!g_raop) {
+        env->ReleaseStringUTFChars(jname, name);
+        LOGE("raop_init failed");
+        return 0;
+    }
     raop_set_log_callback(g_raop, log_callback, nullptr);
     raop_set_log_level(g_raop, RAOP_LOG_DEBUG);
 
-    // dnssd_stub.c implements this API as a no-op store for name + hw_addr.
-    // Kotlin (NsdManager) handles actual Bonjour advertising.
-    static const char hw_addr[6] = {(char)0xAA,(char)0xBB,(char)0xCC,(char)0xDD,(char)0xEE,(char)0xFF};
+    // dnssd_stub.c stores identity for the RTSP pairing responses. JmDNS
+    // performs the actual Bonjour advertisement on Android 4.4.
     int err = 0;
-    g_dnssd = dnssd_init("localair", 8, hw_addr, 6, &err);
-    if (!g_dnssd) { LOGE("dnssd_init failed: %d", err); raop_destroy(g_raop); g_raop = nullptr; return 0; }
+    g_dnssd = dnssd_init(name, static_cast<int>(strlen(name)),
+                         reinterpret_cast<const char*>(hw_addr), 6, &err);
+    env->ReleaseStringUTFChars(jname, name);
+    if (!g_dnssd) {
+        LOGE("dnssd_init failed: %d", err);
+        raop_destroy(g_raop); g_raop = nullptr;
+        return 0;
+    }
     raop_set_dnssd(g_raop, g_dnssd);
 
     unsigned short port = 0;

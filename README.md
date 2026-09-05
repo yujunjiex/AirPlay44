@@ -1,87 +1,98 @@
-# localair
+# AirPlay44
 
-A small, native AirPlay 2 mirroring receiver for Android TV / Android-based
-projectors. No ads, no telemetry, no account, ~10 MB APK.
+An experimental, local-only AirPlay screen-mirroring receiver for 32-bit
+Android 4.4 TVs. It is designed for older Sharp TV hardware with API 19,
+`armeabi-v7a`, about 1 GB RAM, and a hardware H.264 decoder.
 
-Built because every app-store AirPlay receiver for Android TV is either
-adware, paywalled, or both — and the underlying protocol stack
-([RPiPlay](https://github.com/FD-/RPiPlay)) has been freely available for
-years. localair is a thin Kotlin shell around RPiPlay's RTSP / FairPlay /
-mirror code, plus a `MediaCodec` decode path that renders straight to a
-`SurfaceView`.
+AirPlay44 has no account, cloud service, ads, analytics, or billing. It is an
+independent interoperability project and is not affiliated with Apple.
 
-## Status
+> **Alpha status:** the APK builds and its protocol helpers, manifest, ABI,
+> signature, and native dependencies are tested automatically. Installation,
+> discovery, pairing, video, and audio still require validation on the target
+> Sharp Android 4.4 TV. Do not describe this release as hardware-verified yet.
 
-| Feature                       | State        |
-| ----------------------------- | ------------ |
-| AirPlay 2 pairing handshake   | ✅ working    |
-| FairPlay v2 (`/fp-setup`)     | ✅ working    |
-| Mirror SETUP / RECORD         | ✅ working    |
-| H.264 video → MediaCodec      | ✅ working    |
-| AAC-ELD audio → AudioTrack    | ⏳ stubbed    |
-| Tested hardware               | Xiaomi MiProjL1 (Android 9 / armv7) |
+## Implemented scope
+
+| Capability | Implementation | Current evidence |
+| --- | --- | --- |
+| AirPlay/RAOP handshake | RPiPlay over C/C++ and JNI | Native library builds for API 19 |
+| Bonjour discovery | JmDNS `_airplay._tcp` + `_raop._tcp` | TXT-record unit tests |
+| Screen mirroring | H.264 Annex-B to synchronous `MediaCodec` | Parser tests; hardware pending |
+| Mirroring audio | AAC-ELD `MediaCodec` to `AudioTrack` | Builds on API 19; hardware pending |
+| Privacy | Local LAN only; no telemetry or account | Manifest and source review |
+
+DRM-protected video such as Apple TV+ is not supported. Some Android 4.4 TV
+firmware does not expose an AAC-ELD decoder, in which case video may work
+without audio. The current alpha does not require a pairing PIN, so only use it
+on a trusted home network.
+
+## Install on a TV
+
+1. Download the APK from the latest GitHub Release.
+2. Copy it to a FAT32 USB drive.
+3. On the TV, enable **Settings -> Application management -> Unknown sources**.
+4. Open the APK from the TV's media/file browser and launch **AirPlay 4.4**.
+5. Put the iPhone and TV on the same non-guest LAN.
+6. On iPhone, open Control Center -> Screen Mirroring -> **客厅电视 AirPlay**.
+
+Test the iPhone home screen or Photos first. If the receiver is not visible,
+disable AP/client isolation on the router. Diagnostic logs:
+
+```sh
+adb logcat -s AirPlay44-Service AirPlay44-mDNS AirPlay44-Video \
+  AirPlay44-Audio airplay_native rpiplay
+```
+
+## Build and test
+
+Requirements:
+
+- JDK 17
+- Android SDK 35 and Build Tools 35.0.0
+- Android NDK 25.2.9519653 (NDK 26+ cannot target API 19)
+- CMake 3.22.1
+
+```sh
+./setup-deps.sh
+export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+./scripts/build-openssl.sh
+cp local.properties.example local.properties  # edit sdk.dir
+./gradlew testDebugUnitTest lintDebug assembleDebug
+./scripts/verify-apk.sh app/build/outputs/apk/debug/app-debug.apk
+```
+
+`setup-deps.sh` pins RPiPlay and libplist to exact commits and verifies the
+OpenSSL 1.1.1w source checksum. OpenSSL is compiled statically against API 19;
+using a recent prebuilt `libcrypto.so` would import functions unavailable on
+Android 4.4.
 
 ## Architecture
 
-```
-┌────────────── :app (Kotlin) ──────────────┐
-│  MainActivity  → SurfaceView + waiting UI │
-│  AirPlayService→ foreground svc, mDNS     │
-│  MdnsAdvertiser→ NsdManager _airplay/_raop│
-│  VideoDecoder  → MediaCodec → Surface     │
-└─────────────────┬─────────────────────────┘
-                  │  JNI
-┌─────────────────▼─────────────────────────┐
-│              :airplay (C/C++)              │
-│  jni_bridge.cpp  raop_init / raop_start    │
-│  video_sink.cpp  NAL → JNI callback        │
-│  dnssd_stub.c    no-op libdns_sd shim      │
-│                                            │
-│  third_party/RPiPlay/lib  (RTSP, FairPlay, │
-│                            mirror buffer)  │
-│  third_party/libplist     (in-tree build)  │
-│  com.android.ndk.thirdparty:openssl (AAR)  │
-└────────────────────────────────────────────┘
+```text
+iPhone
+  |  mDNS + AirPlay/RAOP
+  v
+JmDNS + RPiPlay (C/C++)
+  |  JNI: Annex-B H.264 / AAC-ELD
+  v
+MediaCodec + SurfaceView / AudioTrack
 ```
 
-The Kotlin layer never touches RTSP or crypto — it just owns the Surface
-and feeds NAL units it gets from the JNI bridge into MediaCodec. mDNS is
-done in Kotlin via `NsdManager`, replacing RPiPlay's libdns_sd-based
-`dnssd.c` with a minimal stub (`dnssd_stub.c`) that satisfies the API.
+## Licensing and attribution
 
-## Build
+AirPlay44 is GPL-3.0-or-later because it statically links RPiPlay. See
+[`LICENSE`](LICENSE).
 
-Requires JDK 21 (Temurin recommended), Android SDK 35, NDK r27, CMake 3.22.
+This Android 4.4 port is based on
+[`phoria-sam-tg/localair`](https://github.com/phoria-sam-tg/localair) commit
+`e6bd503`, with the following upstream components:
 
-```sh
-./setup-deps.sh                           # clone RPiPlay + libplist
-cp local.properties.example local.properties   # then edit sdk.dir
-./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
+| Component | Pinned version | License |
+| --- | --- | --- |
+| [RPiPlay](https://github.com/FD-/RPiPlay) | `64d0341ed3bef098c940c9ed0675948870a271f9` | GPL-3.0 |
+| [libplist](https://github.com/libimobiledevice/libplist) | `32428abacb909988e8e960a8845a6430b17b6a60` | LGPL-2.1-or-later |
+| [OpenSSL](https://www.openssl.org/) | 1.1.1w | OpenSSL/SSLeay |
 
-If you don't have a wireless ADB pairing UI on your Android TV
-(common on older Xiaomi / FengOS builds), enabling **Developer options →
-USB debugging** and rebooting once is usually enough — `adb connect <ip>:5555`
-will then accept after you confirm the RSA prompt on the TV.
-
-## Licensing
-
-GPL-3.0-or-later. This project statically links RPiPlay, which is GPL-3.0,
-so the combined work inherits GPL-3.0. See `LICENSE`.
-
-Third-party components and their licenses:
-
-| Component           | License           |
-| ------------------- | ----------------- |
-| RPiPlay             | GPL-3.0           |
-| libplist            | LGPL-2.1-or-later |
-| OpenSSL (libcrypto) | OpenSSL / Apache-2.0 dual |
-
-## Credits
-
-Standing on the shoulders of:
-
-- [RPiPlay](https://github.com/FD-/RPiPlay) — entire AirPlay 2 / FairPlay 2 stack
-- [shairplay](https://github.com/juhovh/shairplay) — RAOP groundwork RPiPlay forked from
-- [libplist](https://github.com/libimobiledevice/libplist) — Apple plist parsing
+RPiPlay's FairPlay-compatible implementation is reverse engineered for
+interoperability. Review the laws that apply where you use or distribute it.

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Leanback" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.AirPlay44" parent="android:style/Theme.Holo.NoActionBar.Fullscreen">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>

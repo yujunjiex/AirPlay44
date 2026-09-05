@@ -7,13 +7,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(RPIPLAY_ROOT ${CMAKE_SOURCE_DIR}/../../../../third_party/RPiPlay)
 set(RPIPLAY_LIB ${RPIPLAY_ROOT}/lib)
 set(LIBPLIST_ROOT ${CMAKE_SOURCE_DIR}/../../../../third_party/libplist)
+set(OPENSSL_ROOT ${CMAKE_SOURCE_DIR}/../../../../third_party/openssl-1.1.1w)
 
 #
-# OpenSSL via Google's prefab AAR (com.android.ndk.thirdparty:openssl).
-# AGP's prefab feature makes headers + per-ABI .so available under the
-# CMAKE_FIND_ROOT_PATH AGP sets up, so find_package just works.
+# OpenSSL is compiled for android-arm/API 19 by scripts/build-openssl.sh.
+# A modern prebuilt libcrypto references getentropy(), which Android 4.4
+# does not provide and would make the application fail during dlopen().
 #
-find_package(openssl REQUIRED CONFIG)
+add_library(openssl_crypto STATIC IMPORTED)
+set_target_properties(openssl_crypto PROPERTIES
+    IMPORTED_LOCATION ${OPENSSL_ROOT}/libcrypto.a
+    INTERFACE_INCLUDE_DIRECTORIES ${OPENSSL_ROOT}/include
+)
 
 #
 # libplist — compiled in-tree from third_party/libplist. We skip the C++
@@ -29,6 +34,7 @@ if(EXISTS ${LIBPLIST_ROOT}/src/plist.c)
         ${LIBPLIST_ROOT}/src/jplist.c
         ${LIBPLIST_ROOT}/src/oplist.c
         ${LIBPLIST_ROOT}/src/base64.c
+        ${LIBPLIST_ROOT}/src/common.c
         ${LIBPLIST_ROOT}/src/bytearray.c
         ${LIBPLIST_ROOT}/src/hashtable.c
         ${LIBPLIST_ROOT}/src/ptrarray.c
@@ -84,7 +90,7 @@ if(EXISTS ${RPIPLAY_LIB}/raop.c AND HAVE_LIBPLIST)
     )
     target_compile_definitions(rpiplay PRIVATE _GNU_SOURCE OPENSSL_API_COMPAT=0x10101000L)
     target_compile_options(rpiplay PRIVATE -Wno-deprecated-declarations -Wno-pointer-sign -Wno-implicit-function-declaration)
-    target_link_libraries(rpiplay PUBLIC plist openssl::crypto)
+    target_link_libraries(rpiplay PUBLIC plist openssl_crypto)
     set(HAVE_RPIPLAY 1)
 else()
     if(NOT EXISTS ${RPIPLAY_LIB}/raop.c)

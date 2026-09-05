@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">localair</string>
+    <string name="app_name">AirPlay 4.4</string>
+    <string name="waiting">等待 iPhone 投屏…\n控制中心 → 屏幕镜像 → 选择本电视</string>
 </resources>

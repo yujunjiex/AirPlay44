@@ -1,83 +1,81 @@
 package com.localair.airplay
 
 import android.content.Context
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.util.Log
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.NetworkInterface
+import java.util.Collections
+import java.util.Hashtable
+import javax.jmdns.JmDNS
+import javax.jmdns.ServiceInfo
 
-/**
- * Advertises the two services an AirPlay 2 mirroring receiver must expose:
- *   _airplay._tcp  — control + video
- *   _raop._tcp     — audio (RAOP = Remote Audio Output Protocol)
- *
- * The TXT records here are the minimum an iOS sender looks for; see
- * RPiPlay's dnssd.c for the full set we'll mirror once the handshake runs.
- */
-class MdnsAdvertiser(context: Context) {
+/** Android 4.4's NsdServiceInfo cannot publish TXT records, so use JmDNS. */
+class MdnsAdvertiser(private val context: Context) {
+    @Volatile private var jmdns: JmDNS? = null
+    @Volatile private var worker: Thread? = null
 
-    private val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private var airplayListener: NsdManager.RegistrationListener? = null
-    private var raopListener: NsdManager.RegistrationListener? = null
-
-    fun register(port: Int, deviceId: String = "AA:BB:CC:DD:EE:FF", name: String = "localair") {
-
-        val airplay = NsdServiceInfo().apply {
-            serviceName = name
-            serviceType = "_airplay._tcp"
-            setPort(port)
-            setAttribute("deviceid", deviceId)
-            setAttribute("features", "0x5A7FFFF7,0x1E")
-            setAttribute("srcvers", "377.25.06")
-            setAttribute("model", "AppleTV5,3")
-            setAttribute("flags", "0x4")
-            setAttribute("vv", "2")
-            setAttribute("pk", "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7")
-        }
-        airplayListener = loggingListener("airplay")
-        nsd.registerService(airplay, NsdManager.PROTOCOL_DNS_SD, airplayListener)
-
-        val raop = NsdServiceInfo().apply {
-            serviceName = "${deviceId.replace(":", "")}@$name"
-            serviceType = "_raop._tcp"
-            setPort(port)
-            setAttribute("cn", "0,1,2,3")
-            setAttribute("da", "true")
-            setAttribute("et", "0,3,5")
-            setAttribute("ft", "0x5A7FFFF7,0x1E")
-            setAttribute("sf", "0x4")
-            setAttribute("md", "0,1,2")
-            setAttribute("am", "AppleTV5,3")
-            setAttribute("pk", "b07727d6f6cd6e08b58ede525ec3cdeaa252ad9f683feb212ef8a205246554e7")
-            setAttribute("tp", "UDP")
-            setAttribute("vn", "65537")
-            setAttribute("vs", "377.25.06")
-            setAttribute("vv", "2")
-        }
-        raopListener = loggingListener("raop")
-        nsd.registerService(raop, NsdManager.PROTOCOL_DNS_SD, raopListener)
+    fun register(port: Int, deviceId: String, name: String) {
+        unregister()
+        worker = Thread({
+            try {
+                val address = localAddress(context)
+                val advertisement = AirPlayAdvertisement.create(deviceId, name)
+                val dns = JmDNS.create(address, advertisement.hostName)
+                jmdns = dns
+                dns.registerService(ServiceInfo.create(
+                    "_airplay._tcp.local.", name, port, 0, 0,
+                    Hashtable(advertisement.airplayTxt)
+                ))
+                dns.registerService(ServiceInfo.create(
+                    "_raop._tcp.local.", advertisement.raopName,
+                    port, 0, 0, Hashtable(advertisement.raopTxt)
+                ))
+                Log.i(TAG, "advertising $name at ${address.hostAddress}:$port")
+            } catch (error: Throwable) {
+                Log.e(TAG, "mDNS registration failed", error)
+            }
+        }, "AirPlay-mDNS").apply { start() }
     }
 
     fun unregister() {
-        airplayListener?.let { runCatching { nsd.unregisterService(it) } }
-        raopListener?.let { runCatching { nsd.unregisterService(it) } }
-        airplayListener = null
-        raopListener = null
-    }
-
-    private fun loggingListener(tag: String) = object : NsdManager.RegistrationListener {
-        override fun onRegistrationFailed(info: NsdServiceInfo, err: Int) {
-            Log.e(TAG, "$tag registration failed: $err")
-        }
-        override fun onUnregistrationFailed(info: NsdServiceInfo, err: Int) {
-            Log.e(TAG, "$tag unregistration failed: $err")
-        }
-        override fun onServiceRegistered(info: NsdServiceInfo) {
-            Log.i(TAG, "$tag registered: ${info.serviceName}")
-        }
-        override fun onServiceUnregistered(info: NsdServiceInfo) {
-            Log.i(TAG, "$tag unregistered")
+        worker?.interrupt()
+        worker = null
+        val dns = jmdns
+        jmdns = null
+        if (dns != null) {
+            Thread({
+                try {
+                    dns.unregisterAllServices()
+                    dns.close()
+                } catch (_: Throwable) {
+                }
+            }, "AirPlay-mDNS-close").start()
         }
     }
 
-    companion object { private const val TAG = "MdnsAdvertiser" }
+    @Suppress("DEPRECATION")
+    private fun localAddress(context: Context): InetAddress {
+        try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (network in interfaces) {
+                if (!network.isUp || network.isLoopback) continue
+                for (address in Collections.list(network.inetAddresses)) {
+                    if (address is Inet4Address && !address.isLoopbackAddress && address.isSiteLocalAddress) {
+                        return address
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val ip = wifi.connectionInfo.ipAddress
+        return InetAddress.getByAddress(byteArrayOf(
+            (ip and 0xff).toByte(), (ip shr 8 and 0xff).toByte(),
+            (ip shr 16 and 0xff).toByte(), (ip shr 24 and 0xff).toByte()
+        ))
+    }
+
+    companion object { private const val TAG = "AirPlay44-mDNS" }
 }

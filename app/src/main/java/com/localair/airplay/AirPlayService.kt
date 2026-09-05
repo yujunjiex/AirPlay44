@@ -3,41 +3,27 @@ package com.localair.airplay
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import com.localair.airplay.nativebridge.AirPlayNative
 
 class AirPlayService : Service() {
-
     private var multicastLock: WifiManager.MulticastLock? = null
-    private lateinit var mdns: MdnsAdvertiser
+    private var mdns: MdnsAdvertiser? = null
     private val audio = AudioDecoder()
     val video = VideoDecoder { hasFrames ->
-        // Broadcast to any listening Activity
-        val intent = Intent(ACTION_FRAMES_CHANGED).putExtra("hasFrames", hasFrames)
-        sendBroadcast(intent)
+        sendBroadcast(Intent(ACTION_FRAMES_CHANGED).putExtra("hasFrames", hasFrames))
     }
-    private val handler = Handler(Looper.getMainLooper())
-    private var port = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.let {
-            if (it.hasExtra("surface_attached")) {
-                // Activity is telling us about its surface — handled via attachSurface/detachSurface
-            }
-        }
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onCreate() {
         super.onCreate()
@@ -45,89 +31,78 @@ class AirPlayService : Service() {
         startInForeground()
         acquireMulticastLock()
         startReceiver()
-        scheduleHealthCheck()
     }
 
     override fun onDestroy() {
         instance = null
-        handler.removeCallbacksAndMessages(null)
-        if (::mdns.isInitialized) mdns.unregister()
+        mdns?.unregister()
         AirPlayNative.setVideoSink(null)
         AirPlayNative.setAudioSink(null)
         AirPlayNative.stop()
         video.release()
         audio.release()
-        multicastLock?.release()
+        try { multicastLock?.release() } catch (_: Throwable) {}
         super.onDestroy()
     }
 
-    fun attachSurface(s: Surface) { video.attachSurface(s) }
-    fun detachSurface() { video.detachSurface() }
+    fun attachSurface(surface: Surface) = video.attachSurface(surface)
+    fun detachSurface() = video.detachSurface()
 
     private fun startReceiver() {
-        port = AirPlayNative.start()
+        val name = DeviceIdentity.deviceName(this)
+        val mac = DeviceIdentity.macAddress(this)
         AirPlayNative.setVideoSink(video)
         AirPlayNative.setAudioSink(audio)
         AirPlayNative.connectionListener = {
-            val intent = Intent(this, MainActivity::class.java).apply {
+            startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            }
-            startActivity(intent)
+            })
         }
-        val name = DeviceIdentity.deviceName(this)
-        mdns = MdnsAdvertiser(this)
-        if (port > 0) {
-            mdns.register(port, DeviceIdentity.macAddress(this), name)
-            Log.i(TAG, "receiver up: $name on port $port (mac=${DeviceIdentity.macAddress(this)})")
-        } else {
-            Log.w(TAG, "native start returned 0 — skipping mDNS")
+        val port = AirPlayNative.start(name, DeviceIdentity.macBytes(this))
+        if (port <= 0) {
+            Log.e(TAG, "native AirPlay server failed to start")
+            return
         }
-    }
-
-    private fun scheduleHealthCheck() {
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                if (port > 0 && !AirPlayNative.isRunning()) {
-                    Log.w(TAG, "raop died — restarting receiver")
-                    AirPlayNative.stop()
-                    if (::mdns.isInitialized) mdns.unregister()
-                    audio.release()
-                    startReceiver()
-                }
-                handler.postDelayed(this, HEALTH_INTERVAL_MS)
-            }
-        }, HEALTH_INTERVAL_MS)
+        mdns = MdnsAdvertiser(this).also { it.register(port, mac, name) }
+        Log.i(TAG, "receiver ready: $name ($mac), port $port")
     }
 
     private fun acquireMulticastLock() {
-        val wifi = getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         multicastLock = wifi.createMulticastLock(TAG).apply {
             setReferenceCounted(false)
             acquire()
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun startInForeground() {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "AirPlay", NotificationManager.IMPORTANCE_LOW)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val builder = if (Build.VERSION.SDK_INT >= 26) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL, "AirPlay 4.4", NotificationManager.IMPORTANCE_LOW)
             )
+            Notification.Builder(this, CHANNEL)
+        } else {
+            Notification.Builder(this)
         }
-        val name = DeviceIdentity.deviceName(this)
-        val n: Notification = Notification.Builder(this, CHANNEL)
-            .setContentTitle("localair")
-            .setContentText("Receiver active — $name")
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = builder
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("无线投屏接收器已启动")
+            .setContentIntent(open)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .build()
-        startForeground(1, n)
+        startForeground(1, notification)
     }
 
     companion object {
-        const val ACTION_FRAMES_CHANGED = "com.localair.airplay.FRAMES_CHANGED"
-        private const val TAG = "AirPlayService"
-        private const val CHANNEL = "airplay"
-        private const val HEALTH_INTERVAL_MS = 10_000L
-        @Volatile var instance: AirPlayService? = null; private set
+        const val ACTION_FRAMES_CHANGED = "io.github.yujunjiex.airplay44.FRAMES_CHANGED"
+        private const val TAG = "AirPlay44-Service"
+        private const val CHANNEL = "airplay44"
+        @Volatile var instance: AirPlayService? = null
+            private set
     }
 }

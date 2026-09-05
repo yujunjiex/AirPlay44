@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "localair"
+rootProject.name = "airplay44"
 include(":app", ":airplay")
