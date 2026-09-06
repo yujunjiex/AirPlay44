@@ -113,7 +113,10 @@ Java_com_localair_airplay_nativebridge_AirPlayNative_nativeStart(
         return 0;
     }
     raop_set_log_callback(g_raop, log_callback, nullptr);
-    raop_set_log_level(g_raop, RAOP_LOG_DEBUG);
+    // DEBUG includes one formatted Android log entry per video frame in
+    // RPiPlay. That is costly on the target dual-core A53 and can make the
+    // decoder queue fall behind during long sessions.
+    raop_set_log_level(g_raop, RAOP_LOG_INFO);
 
     // dnssd_stub.c stores identity for the RTSP pairing responses. JmDNS
     // performs the actual Bonjour advertisement on Android 4.4.

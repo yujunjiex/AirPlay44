@@ -9,14 +9,29 @@ import android.content.Context
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import android.view.Surface
 import com.localair.airplay.nativebridge.AirPlayNative
 
 class AirPlayService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private var mdns: MdnsAdvertiser? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val receiverWatchdog = object : Runnable {
+        override fun run() {
+            if (!AirPlayNative.isRunning()) {
+                Log.w(TAG, "AirPlay server stopped unexpectedly; restarting")
+                restartReceiver()
+            }
+            handler.postDelayed(this, RECEIVER_HEALTH_INTERVAL_MS)
+        }
+    }
     private val audio = AudioDecoder()
     internal val video = VideoDecoder(
         onFramesChanged = { hasFrames ->
@@ -38,19 +53,23 @@ class AirPlayService : Service() {
         super.onCreate()
         instance = this
         startInForeground()
-        acquireMulticastLock()
+        acquireNetworkLocks()
         startReceiver()
+        handler.postDelayed(receiverWatchdog, RECEIVER_HEALTH_INTERVAL_MS)
     }
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         instance = null
-        mdns?.unregister()
+        AirPlayNative.connectionListener = null
+        stopReceiver()
         AirPlayNative.setVideoSink(null)
         AirPlayNative.setAudioSink(null)
-        AirPlayNative.stop()
         video.release()
         audio.release()
         try { multicastLock?.release() } catch (_: Throwable) {}
+        try { wifiLock?.release() } catch (_: Throwable) {}
+        try { wakeLock?.release() } catch (_: Throwable) {}
         super.onDestroy()
     }
 
@@ -76,11 +95,42 @@ class AirPlayService : Service() {
         Log.i(TAG, "receiver ready: $name ($mac), port $port")
     }
 
-    private fun acquireMulticastLock() {
+    private fun stopReceiver() {
+        try { mdns?.unregister() } catch (error: Throwable) {
+            Log.w(TAG, "mDNS unregister failed", error)
+        }
+        mdns = null
+        AirPlayNative.stop()
+    }
+
+    private fun restartReceiver() {
+        stopReceiver()
+        startReceiver()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireNetworkLocks() {
         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         multicastLock = wifi.createMulticastLock(TAG).apply {
             setReferenceCounted(false)
             acquire()
+        }
+        try {
+            wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$TAG:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "high-performance Wi-Fi lock unavailable", error)
+        }
+        try {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:cpu").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "CPU wake lock unavailable", error)
         }
     }
 
@@ -115,6 +165,7 @@ class AirPlayService : Service() {
         const val EXTRA_VIDEO_HEIGHT = "videoHeight"
         private const val TAG = "AirPlay44-Service"
         private const val CHANNEL = "airplay44"
+        private const val RECEIVER_HEALTH_INTERVAL_MS = 5_000L
         @Volatile var instance: AirPlayService? = null
             private set
     }

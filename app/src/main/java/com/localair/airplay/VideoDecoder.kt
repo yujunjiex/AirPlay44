@@ -6,21 +6,28 @@ import android.util.Log
 import android.view.Surface
 import com.localair.airplay.nativebridge.VideoSink
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.ArrayDeque
 
 /** Synchronous MediaCodec path; asynchronous callbacks only exist on API 21+. */
 internal class VideoDecoder(
     private val onFramesChanged: (Boolean) -> Unit = {},
     private val onVideoSizeChanged: (PixelSize) -> Unit = {},
 ) : VideoSink {
-    private data class Frame(val bytes: ByteArray, val ptsUs: Long)
+    private data class Frame(
+        val bytes: ByteArray,
+        val ptsUs: Long,
+    )
 
-    private val pending = ConcurrentLinkedQueue<Frame>()
+    private val pending = ArrayDeque<Frame>()
+    private val pendingLock = Any()
+    private val sessionLock = Any()
     private val presentationClock = PresentationClock()
     @Volatile private var running = true
     @Volatile private var surface: Surface? = null
     @Volatile private var resetRequested = false
     @Volatile private var waitingForIdr = false
+    @Volatile private var sessionEndDeadlineNs = 0L
+    @Volatile private var lastNalReceivedNs = 0L
     @Volatile var hasFrames = false
         private set
     @Volatile var displaySize: PixelSize? = null
@@ -29,6 +36,10 @@ internal class VideoDecoder(
     @Volatile private var sps: ByteArray? = null
     @Volatile private var pps: ByteArray? = null
     @Volatile private var codec: MediaCodec? = null
+    private var codecStartedNs = 0L
+    private var lastOutputNs = 0L
+    private var inFlightVideoFrames = 0
+    private var inFlightSinceNs = 0L
 
     private val worker = Thread({ decodeLoop() }, "AirPlay44-Video").apply { start() }
 
@@ -51,50 +62,72 @@ internal class VideoDecoder(
         videoWidth: Int,
         videoHeight: Int,
     ) {
+        synchronized(sessionLock) {
+            sessionEndDeadlineNs = 0L
+            lastNalReceivedNs = System.nanoTime()
+        }
         updateGeometry(sourceWidth, sourceHeight, videoWidth, videoHeight)
 
-        val parameters = H264AnnexB.parameterSets(data)
+        // One Annex-B pass per access unit keeps JNI receive work small on the
+        // TV's dual-core CPU.
+        val inspection = H264AnnexB.inspect(data)
+        val parameters = inspection.parameterSets
         val configChanged =
             parameters.sps?.let { sps?.contentEquals(it) == false } == true ||
                 parameters.pps?.let { pps?.contentEquals(it) == false } == true
         parameters.sps?.let { sps = it }
         parameters.pps?.let { pps = it }
         if (configChanged) {
-            pending.clear()
+            clearPending()
             resetRequested = true
             presentationClock.reset()
             waitingForIdr = waitingForIdr || codec != null
         }
 
-        val hasIdr = H264AnnexB.containsIdr(data)
+        val hasIdr = inspection.hasIdr
+        val hasVideoSlice = inspection.hasVideoSlice
+        if (!hasVideoSlice) return
         if (waitingForIdr && !hasIdr) return
         if (waitingForIdr) {
-            pending.clear()
+            clearPending()
             resetRequested = true
             presentationClock.reset()
             waitingForIdr = false
             Log.i(TAG, "resynchronizing decoder at IDR frame")
         }
 
-        pending.offer(Frame(data, ptsUs))
-        if (pending.size > MAX_PENDING_FRAMES) {
+        offerPending(Frame(data, ptsUs))
+        if (pendingSize() > MAX_PENDING_FRAMES) {
             if (hasIdr) {
-                pending.clear()
-                pending.offer(Frame(data, ptsUs))
+                clearPending()
+                offerPending(Frame(data, ptsUs))
                 resetRequested = true
                 presentationClock.reset()
                 Log.w(TAG, "decoder queue is behind; restarting from current IDR")
             } else {
-                // Keep draining already accepted frames so the last image remains
-                // visible. Drop new deltas until an IDR lets us restart cleanly.
+                // Do not preserve seconds of stale frames. Keep the last image
+                // on the Surface and restart from the next independently
+                // decodable frame.
+                clearPending()
                 waitingForIdr = true
+                presentationClock.reset()
                 Log.w(TAG, "decoder queue is behind; dropping new frames until the next IDR")
             }
         }
     }
 
     override fun onSessionEnd() {
-        pending.clear()
+        // iOS can briefly tear down every RTSP control connection while
+        // changing playback state. A new NAL cancels this delayed end so a
+        // pause, full-screen transition, or quick reconnect keeps its frame.
+        synchronized(sessionLock) {
+            sessionEndDeadlineNs = System.nanoTime() + SESSION_END_GRACE_NS
+        }
+        Log.i(TAG, "AirPlay controls closed; waiting for reconnect grace period")
+    }
+
+    private fun endSessionNow() {
+        clearPending()
         sps = null
         pps = null
         geometry = null
@@ -103,6 +136,7 @@ internal class VideoDecoder(
         resetRequested = true
         presentationClock.reset()
         setHasFrames(false)
+        Log.i(TAG, "AirPlay session ended after reconnect grace period")
     }
 
     fun release() {
@@ -113,7 +147,7 @@ internal class VideoDecoder(
         } catch (_: InterruptedException) {
         }
         releaseCodec()
-        pending.clear()
+        clearPending()
     }
 
     private fun updateGeometry(
@@ -128,7 +162,7 @@ internal class VideoDecoder(
         val hadActiveDecoder = codec != null
         geometry = updated
         displaySize = updated.display
-        pending.clear()
+        clearPending()
         resetRequested = true
         presentationClock.reset()
         if (hadActiveDecoder) waitingForIdr = true
@@ -140,11 +174,12 @@ internal class VideoDecoder(
         val info = MediaCodec.BufferInfo()
         while (running) {
             try {
+                finishSessionEndIfExpired()
                 if (resetRequested) {
                     resetRequested = false
                     releaseCodec()
                     presentationClock.reset()
-                    setHasFrames(false)
+                    inFlightVideoFrames = 0
                 }
                 if (codec == null) maybeStartCodec()
                 val current = codec
@@ -154,16 +189,18 @@ internal class VideoDecoder(
                 }
 
                 var didWork = drainOutput(current, info)
-                if (pending.peek() != null) {
+                if (pendingSize() > 0) {
                     val inputIndex = current.dequeueInputBuffer(5_000)
                     if (inputIndex >= 0) {
-                        val frame = pending.poll()
+                        val frame = pollPending()
                         if (frame != null) {
                             val input = current.inputBuffers[inputIndex]
                             input.clear()
                             if (frame.bytes.size <= input.remaining()) {
                                 input.put(frame.bytes)
                                 current.queueInputBuffer(inputIndex, 0, frame.bytes.size, frame.ptsUs, 0)
+                                if (inFlightVideoFrames == 0) inFlightSinceNs = System.nanoTime()
+                                inFlightVideoFrames++
                             } else {
                                 Log.w(TAG, "dropping oversized NAL ${frame.bytes.size}/${input.capacity()}")
                                 current.queueInputBuffer(inputIndex, 0, 0, frame.ptsUs, 0)
@@ -172,15 +209,13 @@ internal class VideoDecoder(
                         }
                     }
                 }
+                recoverIfDecoderStalled()
                 if (!didWork) Thread.sleep(2)
             } catch (interrupted: InterruptedException) {
                 // release() or a reset wakes the worker.
             } catch (error: Throwable) {
                 Log.e(TAG, "decoder failed; waiting for next config", error)
-                releaseCodec()
-                pending.clear()
-                presentationClock.reset()
-                waitingForIdr = true
+                recoverAtNextIdr("decoder exception")
                 try {
                     Thread.sleep(250)
                 } catch (_: InterruptedException) {
@@ -193,8 +228,18 @@ internal class VideoDecoder(
         var didWork = false
         var outputIndex = current.dequeueOutputBuffer(info, 0)
         while (outputIndex >= 0) {
-            waitForPresentation(info.presentationTimeUs)
+            if (pendingSize() <= MAX_SCHEDULED_BACKLOG) {
+                waitForPresentation(info.presentationTimeUs)
+            } else {
+                // Decode and render immediately until the receiver catches up.
+                presentationClock.reset()
+            }
             current.releaseOutputBuffer(outputIndex, true)
+            lastOutputNs = System.nanoTime()
+            if (inFlightVideoFrames > 0) {
+                inFlightVideoFrames--
+                inFlightSinceNs = if (inFlightVideoFrames == 0) 0L else lastOutputNs
+            }
             setHasFrames(true)
             didWork = true
             outputIndex = current.dequeueOutputBuffer(info, 0)
@@ -222,7 +267,12 @@ internal class VideoDecoder(
 
     private fun reportDecoderFormat(format: MediaFormat) {
         Log.i(TAG, "output format: $format")
-        if (geometry != null) return
+        val hasCrop = format.containsKey("crop-left") && format.containsKey("crop-right") &&
+            format.containsKey("crop-top") && format.containsKey("crop-bottom")
+        // Some Android 4.4 codecs expose the padded coded buffer (for example
+        // 1920x1088) as width/height. Only let the decoder override valid
+        // AirPlay geometry when it also supplies an explicit visible crop.
+        if (geometry != null && !hasCrop) return
         val width = visibleDimension(format, MediaFormat.KEY_WIDTH, "crop-left", "crop-right")
         val height = visibleDimension(format, MediaFormat.KEY_HEIGHT, "crop-top", "crop-bottom")
         val size = PixelSize(width, height)
@@ -258,6 +308,10 @@ internal class VideoDecoder(
         decoder.configure(format, target, null, 0)
         decoder.start()
         codec = decoder
+        codecStartedNs = System.nanoTime()
+        lastOutputNs = 0L
+        inFlightVideoFrames = 0
+        inFlightSinceNs = 0L
         Log.i(TAG, "H.264 decoder started at ${encoded.width}x${encoded.height}")
     }
 
@@ -272,7 +326,46 @@ internal class VideoDecoder(
             current.release()
         } catch (_: Throwable) {
         }
+        codecStartedNs = 0L
+        lastOutputNs = 0L
+        inFlightVideoFrames = 0
+        inFlightSinceNs = 0L
     }
+
+    private fun recoverIfDecoderStalled() {
+        if (codec == null || inFlightVideoFrames <= 0) return
+        val now = System.nanoTime()
+        val reference = maxOf(codecStartedNs, lastOutputNs, inFlightSinceNs)
+        if (reference <= 0L || now - reference < DECODER_STALL_NS) return
+        // Do not treat a genuine sender pause as a decoder stall.
+        if (now - lastNalReceivedNs >= DECODER_STALL_NS) return
+        recoverAtNextIdr("no decoded output for ${DECODER_STALL_NS / 1_000_000L} ms")
+    }
+
+    private fun recoverAtNextIdr(reason: String) {
+        Log.w(TAG, "$reason; restarting at next IDR")
+        releaseCodec()
+        clearPending()
+        presentationClock.reset()
+        waitingForIdr = true
+    }
+
+    private fun finishSessionEndIfExpired() {
+        synchronized(sessionLock) {
+            val deadline = sessionEndDeadlineNs
+            if (deadline == 0L || System.nanoTime() < deadline) return
+            sessionEndDeadlineNs = 0L
+            endSessionNow()
+        }
+    }
+
+    private fun offerPending(frame: Frame) = synchronized(pendingLock) { pending.offerLast(frame) }
+
+    private fun pollPending(): Frame? = synchronized(pendingLock) { pending.pollFirst() }
+
+    private fun pendingSize(): Int = synchronized(pendingLock) { pending.size }
+
+    private fun clearPending() = synchronized(pendingLock) { pending.clear() }
 
     private fun setHasFrames(value: Boolean) {
         if (hasFrames == value) return
@@ -283,6 +376,9 @@ internal class VideoDecoder(
     companion object {
         private const val TAG = "AirPlay44-Video"
         private const val AVC_MIME = "video/avc"
-        private const val MAX_PENDING_FRAMES = 90
+        private const val MAX_PENDING_FRAMES = 12
+        private const val MAX_SCHEDULED_BACKLOG = 1
+        private const val DECODER_STALL_NS = 1_500_000_000L
+        private const val SESSION_END_GRACE_NS = 3_000_000_000L
     }
 }

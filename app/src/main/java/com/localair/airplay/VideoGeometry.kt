@@ -21,7 +21,11 @@ internal object VideoGeometry {
         val source = PixelSize(sourceWidth, sourceHeight).takeIf { it.isValid }
         val video = PixelSize(videoWidth, videoHeight).takeIf { it.isValid }
         return StreamGeometry(
-            display = source ?: video ?: fallback,
+            // The Surface contains the encoded/cropped video, so its dimensions
+            // are authoritative for display aspect ratio. iOS may briefly keep
+            // the source dimensions in the previous orientation while entering
+            // or leaving full-screen video.
+            display = video ?: source ?: fallback,
             encoded = video ?: source ?: fallback,
         )
     }

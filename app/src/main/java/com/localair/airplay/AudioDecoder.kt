@@ -21,7 +21,9 @@ class AudioDecoder : AudioSink {
 
     override fun onAacFrame(data: ByteArray, ptsUs: Long) {
         pending.offer(Frame(data, ptsUs))
-        while (pending.size > 200) pending.poll()
+        // Bound audio latency too; hundreds of AAC-ELD frames can otherwise
+        // leave sound seconds behind video after a short CPU spike.
+        while (pending.size > MAX_PENDING_FRAMES) pending.poll()
     }
 
     fun release() {
@@ -117,6 +119,7 @@ class AudioDecoder : AudioSink {
         private const val SAMPLE_RATE = 44100
         private const val AAC_MIME = "audio/mp4a-latm"
         private const val AAC_OBJECT_ELD = 39
+        private const val MAX_PENDING_FRAMES = 48
         private val AAC_ELD_CONFIG = byteArrayOf(
             0xF8.toByte(), 0xE8.toByte(), 0x50.toByte(), 0x00.toByte()
         )

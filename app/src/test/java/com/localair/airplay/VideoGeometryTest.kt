@@ -4,9 +4,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class VideoGeometryTest {
-    @Test fun usesSourceAspectAndEncodedDecoderSize() {
+    @Test fun usesEncodedAspectAndEncodedDecoderSize() {
         val geometry = VideoGeometry.fromAirPlay(2532, 1170, 1920, 886)
-        assertEquals(PixelSize(2532, 1170), geometry.display)
+        assertEquals(PixelSize(1920, 886), geometry.display)
+        assertEquals(PixelSize(1920, 886), geometry.encoded)
+    }
+
+    @Test fun encodedOrientationWinsWhenSourceMetadataIsStale() {
+        val geometry = VideoGeometry.fromAirPlay(1179, 2556, 1920, 886)
+        assertEquals(PixelSize(1920, 886), geometry.display)
         assertEquals(PixelSize(1920, 886), geometry.encoded)
     }
 

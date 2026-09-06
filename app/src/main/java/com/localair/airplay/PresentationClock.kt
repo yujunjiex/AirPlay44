@@ -2,9 +2,10 @@ package com.localair.airplay
 
 /** Maps AirPlay presentation timestamps onto Android's monotonic clock. */
 internal class PresentationClock(
-    private val startupDelayUs: Long = 60_000,
-    private val maxLateUs: Long = 120_000,
-    private val maxTimestampJumpUs: Long = 2_000_000,
+    private val startupDelayUs: Long = 0,
+    private val maxLateUs: Long = 80_000,
+    private val maxLeadUs: Long = 20_000,
+    private val maxTimestampJumpUs: Long = 1_000_000,
 ) {
     private var basePtsUs = UNSET
     private var baseTimeNs = 0L
@@ -25,6 +26,11 @@ internal class PresentationClock(
 
         val targetNs = baseTimeNs + deltaUs * 1_000L
         if (targetNs < nowNs - maxLateUs * 1_000L) {
+            return anchor(ptsUs, nowNs)
+        }
+        // Never build a large local playout buffer. AirPlay has already paced
+        // packets on the network side; a small cap is enough to smooth jitter.
+        if (targetNs > nowNs + maxLeadUs * 1_000L) {
             return anchor(ptsUs, nowNs)
         }
         return targetNs

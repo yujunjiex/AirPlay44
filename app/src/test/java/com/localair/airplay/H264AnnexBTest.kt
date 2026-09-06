@@ -24,6 +24,14 @@ class H264AnnexBTest {
         assertArrayEquals(pps, parameters.pps)
     }
 
+    @Test fun inspectsCombinedAccessUnitInOnePass() {
+        val inspection = H264AnnexB.inspect(nal(7, 1) + nal(8, 2) + nal(5, 3))
+        assertTrue(inspection.hasVideoSlice)
+        assertTrue(inspection.hasIdr)
+        assertArrayEquals(nal(7, 1), inspection.parameterSets.sps)
+        assertArrayEquals(nal(8, 2), inspection.parameterSets.pps)
+    }
+
     @Test fun reportsIdrAndNonIdrSlicesOnly() {
         assertTrue(H264AnnexB.containsVideoSlice(nal(5, 1)))
         assertTrue(H264AnnexB.containsVideoSlice(nal(1, 1)))
