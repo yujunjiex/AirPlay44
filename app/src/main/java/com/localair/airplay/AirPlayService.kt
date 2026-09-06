@@ -22,12 +22,13 @@ class AirPlayService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var mdns: MdnsAdvertiser? = null
+    private var receiverRestarting = false
     private val handler = Handler(Looper.getMainLooper())
     private val receiverWatchdog = object : Runnable {
         override fun run() {
             if (!AirPlayNative.isRunning()) {
                 Log.w(TAG, "AirPlay server stopped unexpectedly; restarting")
-                restartReceiver()
+                restartReceiver("server health check")
             }
             handler.postDelayed(this, RECEIVER_HEALTH_INTERVAL_MS)
         }
@@ -43,6 +44,9 @@ class AirPlayService : Service() {
                     .putExtra(EXTRA_VIDEO_WIDTH, size.width)
                     .putExtra(EXTRA_VIDEO_HEIGHT, size.height)
             )
+        },
+        onSessionExpired = {
+            handler.post { restartReceiver("completed session cleanup") }
         },
     )
 
@@ -103,9 +107,20 @@ class AirPlayService : Service() {
         AirPlayNative.stop()
     }
 
-    private fun restartReceiver() {
-        stopReceiver()
-        startReceiver()
+    fun restartReceiver(reason: String = "manual request") {
+        if (receiverRestarting) return
+        receiverRestarting = true
+        Log.i(TAG, "restarting AirPlay receiver: $reason")
+        try {
+            stopReceiver()
+            // nativeStop may emit a final connection-close callback. Clear it
+            // after stop so the fresh receiver does not inherit stale media.
+            video.resetForReceiverRestart()
+            audio.reset()
+            startReceiver()
+        } finally {
+            receiverRestarting = false
+        }
     }
 
     @Suppress("DEPRECATION")

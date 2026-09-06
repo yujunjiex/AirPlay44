@@ -18,8 +18,8 @@ android {
         minSdk = 19
         // Sideload-only legacy target for the Android 4.4 TV firmware.
         targetSdk = 28
-        versionCode = 4
-        versionName = "0.1.3-rc1"
+        versionCode = 5
+        versionName = "0.1.4-rc1"
     }
 
     if (localProps.containsKey("storeFile")) {

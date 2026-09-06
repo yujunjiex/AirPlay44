@@ -31,19 +31,15 @@ checkout_pinned() {
 checkout_pinned "$THIRD_PARTY/RPiPlay" https://github.com/FD-/RPiPlay.git "$RPIPLAY_REV"
 checkout_pinned "$THIRD_PARTY/libplist" https://github.com/libimobiledevice/libplist.git "$LIBPLIST_REV"
 
-for RPIPLAY_PATCH in \
-    "$ROOT/patches/rpiplay-video-dimensions.patch" \
-    "$ROOT/patches/rpiplay-mirror-reconnect.patch"
-do
-    if git -C "$THIRD_PARTY/RPiPlay" apply --reverse --check "$RPIPLAY_PATCH" 2>/dev/null; then
-        : # Patch is already applied.
-    elif git -C "$THIRD_PARTY/RPiPlay" apply --check "$RPIPLAY_PATCH"; then
-        git -C "$THIRD_PARTY/RPiPlay" apply "$RPIPLAY_PATCH"
-    else
-        echo "RPiPlay patch does not apply cleanly: $RPIPLAY_PATCH" >&2
-        exit 1
-    fi
-done
+RPIPLAY_PATCH="$ROOT/patches/rpiplay-video-dimensions.patch"
+if git -C "$THIRD_PARTY/RPiPlay" apply --reverse --check "$RPIPLAY_PATCH" 2>/dev/null; then
+    : # Patch is already applied.
+elif git -C "$THIRD_PARTY/RPiPlay" apply --check "$RPIPLAY_PATCH"; then
+    git -C "$THIRD_PARTY/RPiPlay" apply "$RPIPLAY_PATCH"
+else
+    echo "RPiPlay video-dimensions patch does not apply cleanly" >&2
+    exit 1
+fi
 
 OPENSSL_ROOT="$THIRD_PARTY/openssl-$OPENSSL_VERSION"
 if [ ! -d "$OPENSSL_ROOT" ]; then

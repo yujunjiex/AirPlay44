@@ -15,6 +15,7 @@ class AudioDecoder : AudioSink {
     private data class Frame(val bytes: ByteArray, val ptsUs: Long)
     private val pending = ConcurrentLinkedQueue<Frame>()
     @Volatile private var running = true
+    @Volatile private var resetRequested = false
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private val worker = Thread({ decodeLoop() }, "AirPlay44-Audio").apply { start() }
@@ -34,10 +35,20 @@ class AudioDecoder : AudioSink {
         pending.clear()
     }
 
+    fun reset() {
+        pending.clear()
+        resetRequested = true
+        worker.interrupt()
+    }
+
     private fun decodeLoop() {
         val info = MediaCodec.BufferInfo()
         while (running) {
             try {
+                if (resetRequested) {
+                    resetRequested = false
+                    releaseDecoder()
+                }
                 if (pending.isEmpty()) {
                     Thread.sleep(5)
                     continue

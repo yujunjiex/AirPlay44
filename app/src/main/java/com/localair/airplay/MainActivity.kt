@@ -9,12 +9,14 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 
 class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var root: FrameLayout
@@ -109,6 +111,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(stateReceiver)
         super.onDestroy()
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            AirPlayService.instance?.restartReceiver("TV remote confirmation key")
+            waiting.visibility = View.VISIBLE
+            Toast.makeText(this, "投屏接收器已重启，请在手机上重新连接", Toast.LENGTH_LONG).show()
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun updateSurfaceLayout(content: PixelSize) {

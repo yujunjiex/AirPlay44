@@ -12,6 +12,7 @@ import java.util.ArrayDeque
 internal class VideoDecoder(
     private val onFramesChanged: (Boolean) -> Unit = {},
     private val onVideoSizeChanged: (PixelSize) -> Unit = {},
+    private val onSessionExpired: () -> Unit = {},
 ) : VideoSink {
     private data class Frame(
         val bytes: ByteArray,
@@ -28,6 +29,7 @@ internal class VideoDecoder(
     @Volatile private var waitingForIdr = false
     @Volatile private var sessionEndDeadlineNs = 0L
     @Volatile private var lastNalReceivedNs = 0L
+    @Volatile private var queueSaturated = false
     @Volatile var hasFrames = false
         private set
     @Volatile var displaySize: PixelSize? = null
@@ -95,6 +97,16 @@ internal class VideoDecoder(
             waitingForIdr = false
             Log.i(TAG, "resynchronizing decoder at IDR frame")
         }
+        if (queueSaturated) {
+            if (!hasIdr) return
+            clearPending()
+            offerPending(Frame(data, ptsUs))
+            resetRequested = true
+            presentationClock.reset()
+            queueSaturated = false
+            Log.i(TAG, "decoder queue resynchronized at IDR frame")
+            return
+        }
 
         offerPending(Frame(data, ptsUs))
         if (pendingSize() > MAX_PENDING_FRAMES) {
@@ -103,15 +115,18 @@ internal class VideoDecoder(
                 offerPending(Frame(data, ptsUs))
                 resetRequested = true
                 presentationClock.reset()
+                queueSaturated = false
                 Log.w(TAG, "decoder queue is behind; restarting from current IDR")
             } else {
-                // Do not preserve seconds of stale frames. Keep the last image
-                // on the Surface and restart from the next independently
-                // decodable frame.
-                clearPending()
-                waitingForIdr = true
-                presentationClock.reset()
-                Log.w(TAG, "decoder queue is behind; dropping new frames until the next IDR")
+                // Preserve the already accepted dependency chain and reject
+                // only new delta frames until an IDR arrives. Clearing a small
+                // startup queue made slow Android 4.4 decoders enter a
+                // permanent black-screen/keyframe loop.
+                removeNewestPending()
+                if (!queueSaturated) {
+                    queueSaturated = true
+                    Log.w(TAG, "decoder queue saturated; preserving chain until next IDR")
+                }
             }
         }
     }
@@ -126,17 +141,26 @@ internal class VideoDecoder(
         Log.i(TAG, "AirPlay controls closed; waiting for reconnect grace period")
     }
 
-    private fun endSessionNow() {
+    private fun endSessionNow(notifyExpired: Boolean = true) {
         clearPending()
         sps = null
         pps = null
         geometry = null
         displaySize = null
         waitingForIdr = false
+        queueSaturated = false
         resetRequested = true
         presentationClock.reset()
         setHasFrames(false)
         Log.i(TAG, "AirPlay session ended after reconnect grace period")
+        if (notifyExpired) onSessionExpired()
+    }
+
+    fun resetForReceiverRestart() {
+        synchronized(sessionLock) {
+            sessionEndDeadlineNs = 0L
+            endSessionNow(notifyExpired = false)
+        }
     }
 
     fun release() {
@@ -166,6 +190,7 @@ internal class VideoDecoder(
         resetRequested = true
         presentationClock.reset()
         if (hadActiveDecoder) waitingForIdr = true
+        queueSaturated = false
         onVideoSizeChanged(updated.display)
         Log.i(TAG, "AirPlay geometry: display=${updated.display}, encoded=${updated.encoded}")
     }
@@ -333,7 +358,7 @@ internal class VideoDecoder(
     }
 
     private fun recoverIfDecoderStalled() {
-        if (codec == null || inFlightVideoFrames <= 0) return
+        if (!hasFrames || codec == null || inFlightVideoFrames <= 0) return
         val now = System.nanoTime()
         val reference = maxOf(codecStartedNs, lastOutputNs, inFlightSinceNs)
         if (reference <= 0L || now - reference < DECODER_STALL_NS) return
@@ -348,6 +373,7 @@ internal class VideoDecoder(
         clearPending()
         presentationClock.reset()
         waitingForIdr = true
+        queueSaturated = false
     }
 
     private fun finishSessionEndIfExpired() {
@@ -363,6 +389,8 @@ internal class VideoDecoder(
 
     private fun pollPending(): Frame? = synchronized(pendingLock) { pending.pollFirst() }
 
+    private fun removeNewestPending(): Frame? = synchronized(pendingLock) { pending.pollLast() }
+
     private fun pendingSize(): Int = synchronized(pendingLock) { pending.size }
 
     private fun clearPending() = synchronized(pendingLock) { pending.clear() }
@@ -376,9 +404,9 @@ internal class VideoDecoder(
     companion object {
         private const val TAG = "AirPlay44-Video"
         private const val AVC_MIME = "video/avc"
-        private const val MAX_PENDING_FRAMES = 12
+        private const val MAX_PENDING_FRAMES = 45
         private const val MAX_SCHEDULED_BACKLOG = 1
-        private const val DECODER_STALL_NS = 1_500_000_000L
+        private const val DECODER_STALL_NS = 8_000_000_000L
         private const val SESSION_END_GRACE_NS = 3_000_000_000L
     }
 }
